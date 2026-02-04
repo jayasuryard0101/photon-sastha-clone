@@ -1,0 +1,21 @@
+{
+  "name": "multiplayer-game-backend",
+  "version": "1.0.0",
+  "description": "A backend server for multiplayer games using Socket.io",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "express": "^4.17.1",
+    "socket.io": "^4.0.0"
+  },
+  "devDependencies": {
+    "jest": "^27.0.0",
+    "socket.io-client": "^4.0.0"
+  },
+  "author": "",
+  "license": "ISC"
+}
