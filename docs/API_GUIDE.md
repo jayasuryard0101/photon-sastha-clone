@@ -3,9 +3,9 @@
 Backend: Node.js + Express + Socket.IO + MongoDB (see DB_CONNECTION_STRING in .env). Players and matches are persisted so data survives restarts.
 
 ## Base URLs
-- REST base: http://localhost:2000/api
-- Health: http://localhost:2000/health
-- WebSocket endpoint: ws://localhost:2000 (Socket.IO)
+- REST base: https://photon-sastha-clone.onrender.com/api
+- Health: https://photon-sastha-clone.onrender.com/health
+- WebSocket endpoint: ws://photon-sastha-clone.onrender.com (Socket.IO)
 
 ## REST Endpoints
 - GET /health — liveness check.
