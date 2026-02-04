@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const { config } = require('./config');
 const { setupSocket } = require('./sockets');
 const { createApiRouter } = require('./controllers/apiRoutes');
+const { connectDb } = require('./db/connection');
 
 const app = express();
 
@@ -21,8 +22,14 @@ app.get('/health', (_req, res) => res.status(200).send('ok'));
 // REST API for matchmaking/state
 app.use('/api', createApiRouter({ io }));
 
-setupSocket(io);
+(async () => {
+  await connectDb();
+  setupSocket(io);
 
-server.listen(config.port, () => {
-  console.log(`Server is running on http://localhost:${config.port}`);
+  server.listen(config.port, () => {
+    console.log(`Server is running on http://localhost:${config.port}`);
+  });
+})().catch((err) => {
+  console.error('Failed to start server', err);
+  process.exit(1);
 });

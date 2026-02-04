@@ -1,4 +1,12 @@
 const { MatchService } = require('../services/matchService');
+const {
+    upsertPlayer,
+    updatePlayerPosition,
+    removePlayer,
+    createMatch,
+    listMatches,
+    listPlayers,
+} = require('../db/repositories');
 
 const matchService = new MatchService();
 
@@ -8,28 +16,31 @@ let gameState = {
 };
 
 const gameEventHandlers = (socket, io) => {
-    socket.on('player:join', (payload = {}) => {
-        handlePlayerJoin(socket, payload);
-        socket.emit('game:state', gameState);
-        socket.broadcast.emit('player:joined', gameState.players[socket.id]);
+    socket.on('player:join', async (payload = {}) => {
+        const player = handlePlayerJoin(socket, payload);
+        await upsertPlayer(player);
+
+        const state = await getGameState();
+        socket.emit('game:state', state);
+        socket.broadcast.emit('player:joined', player);
     });
 
-    socket.on('player:move', (movementData = { x: 0, y: 0 }) => {
-        handlePlayerMove(socket, movementData, io);
+    socket.on('player:move', async (movementData = { x: 0, y: 0 }) => {
+        await handlePlayerMove(socket, movementData, io);
     });
 
     socket.on('queue:join', () => {
         matchService.joinQueue(socket.id);
-        tryMatchPlayers(io);
+        tryMatchPlayers(io).catch((err) => console.error('matchmaking failed', err));
     });
 
     socket.on('queue:leave', () => {
         matchService.leaveQueue(socket.id);
     });
 
-    socket.on('disconnect', () => {
+    socket.on('disconnect', async () => {
         matchService.leaveQueue(socket.id);
-        handlePlayerDisconnect(socket, io);
+        await handlePlayerDisconnect(socket, io);
     });
 };
 
@@ -42,9 +53,10 @@ const handlePlayerJoin = (socket, player = {}) => {
         room: player.room,
     };
     gameState.players[socket.id] = safePlayer;
+    return safePlayer;
 };
 
-const handlePlayerMove = (socket, movementData, io) => {
+const handlePlayerMove = async (socket, movementData, io) => {
     const player = gameState.players[socket.id];
     if (!player) return;
 
@@ -52,6 +64,8 @@ const handlePlayerMove = (socket, movementData, io) => {
         x: player.position.x + (movementData.x || 0),
         y: player.position.y + (movementData.y || 0),
     };
+
+    await updatePlayerPosition(socket.id, player.position);
 
     const targetRoom = player.room;
     if (targetRoom) {
@@ -61,9 +75,11 @@ const handlePlayerMove = (socket, movementData, io) => {
     }
 };
 
-const handlePlayerDisconnect = (socket, io) => {
+const handlePlayerDisconnect = async (socket, io) => {
     const player = gameState.players[socket.id];
     delete gameState.players[socket.id];
+
+    await removePlayer(socket.id);
 
     if (player && player.room) {
         io.to(player.room).emit('player:disconnected', socket.id);
@@ -72,7 +88,7 @@ const handlePlayerDisconnect = (socket, io) => {
     }
 };
 
-const tryMatchPlayers = (io) => {
+const tryMatchPlayers = async (io) => {
     const result = matchService.matchPlayers();
     if (!result) return;
 
@@ -95,20 +111,37 @@ const tryMatchPlayers = (io) => {
         room,
     };
 
+    await createMatch(payload);
     io.to(room).emit('match:found', payload);
 };
 
-const getGameState = () => gameState;
+const getGameState = async () => {
+    const [players, matches] = await Promise.all([listPlayers(), listMatches()]);
+    return {
+        players: players.reduce((acc, p) => {
+            acc[p.socketId] = {
+                id: p.socketId,
+                username: p.username,
+                position: p.position,
+                score: p.score,
+                room: p.room,
+            };
+            return acc;
+        }, {}),
+        matches,
+        isGameActive: matches.length > 0,
+    };
+};
 
 module.exports = {
     gameEventHandlers,
     getGameState,
     queueJoin: (socketId, io) => {
         matchService.joinQueue(socketId);
-        tryMatchPlayers(io);
+        return tryMatchPlayers(io);
     },
     queueLeave: (socketId) => {
         matchService.leaveQueue(socketId);
     },
-    getActiveGames: () => matchService.getActiveGames(),
+    getActiveGames: async () => listMatches(),
 };
