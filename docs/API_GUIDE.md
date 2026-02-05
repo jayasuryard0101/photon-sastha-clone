@@ -20,9 +20,9 @@ Backend: Node.js + Express + Socket.IO + MongoDB (see DB_CONNECTION_STRING in .e
 
 ## Socket.IO Events
 Client → Server
-- player:join — { username?, position?, score?, room? } → player persisted.
+- player:join — { username?, position?, score?, room? } → persists the player and broadcasts presence; still required so `player:moved`, `match:joined`, and roster hydration work.
 - player:move — { x, y } → position persisted.
-- queue:join — create a lobby with yourself as host/master.
+- queue:join — create a lobby with yourself as host/master (use this instead of REST queue).
 - lobby:join — { gameId } join an existing lobby.
 - queue:leave — optional legacy queue removal.
 
@@ -47,13 +47,13 @@ curl -X DELETE http://localhost:2000/api/matches/yourGameId
 - All players and matches are stored in MongoDB for persistence; server restarts keep historical data.
 - Ensure MongoDB is running locally or update DB_CONNECTION_STRING accordingly.
 
-## Frontend Integration
-- Connecting to WebSocket: use Socket.IO client, e.g. `const socket = io('ws://photon-sastha-clone.onrender.com');`.
-- Join flow: after connecting, emit `player:join` with `{ username, position: { x, y }, score }`. Listen for `player:joined` to confirm and `match:found` to know the room/gameId.
-- Movement updates: emit `player:move` with `{ x, y }`; listen for `player:moved` to update other players and `game:state` for resyncs.
-- Queue handling: call REST `POST /api/queue/join` or `queue:leave` with `{ socketId: socket.id }` after the socket is connected; also listen for `match:found` to auto-join a room.
-- State hydration: on page load, fetch `GET /api/state` to pre-populate players/matches; then rely on socket events for live updates.
-- Disconnections: handle `player:disconnected` to remove players locally; consider re-emitting `player:join` on reconnection to repersist state.
+## Frontend Integration (lobby-first)
+- Connect to WebSocket: `const socket = io('ws://photon-sastha-clone.onrender.com');`.
+- Always emit `player:join` once connected; it persists your player so roster, moves, and match events work even without REST matchmaking.
+- Host flow: emit `queue:join` to create a lobby and become `masterClientId`; wait for `match:found`/`match:joined`.
+- Joiner flow: fetch `GET /api/lobbies`, pick a `gameId`, emit `lobby:join { gameId }`, and listen for `match:found`/`match:joined` plus `player:joined`.
+- Movement: emit `player:move` with `{ x, y }`; listen for `player:moved` (room-scoped) and `game:state` for resyncs.
+- Disconnections/reconnects: handle `player:disconnected`; on reconnect, re-emit `player:join` and re-run host/join flow.
 - Sample setup (browser):
 ```html
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
@@ -63,12 +63,26 @@ curl -X DELETE http://localhost:2000/api/matches/yourGameId
 
 	socket.on('connect', async () => {
 		socket.emit('player:join', { username: 'Player1', position: { x: 0, y: 0 }, score: 0 });
-		await fetch(`${REST_BASE}/queue/join`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ socketId: socket.id }) });
+
+		// Option A: host creates lobby
+		// socket.emit('queue:join');
+
+		// Option B: join existing lobby by gameId
+		// const { lobbies } = await fetch(`${REST_BASE}/lobbies`).then((r) => r.json());
+		// const target = lobbies[0];
+		// if (target) socket.emit('lobby:join', { gameId: target.gameId });
 	});
 
-	socket.on('match:found', ({ room }) => {
-		// join room on client side UI, server already associates socket
-		console.log('Match ready for room', room);
+	socket.on('match:found', ({ room, gameId, masterClientId }) => {
+		console.log('Match ready', { room, gameId, masterClientId });
+	});
+
+	socket.on('match:joined', ({ room }) => {
+		console.log('Joined match room', room);
+	});
+
+	socket.on('player:joined', (players) => {
+		console.log('Roster update', players);
 	});
 
 	socket.on('player:moved', ({ id, position }) => {
@@ -78,8 +92,9 @@ curl -X DELETE http://localhost:2000/api/matches/yourGameId
 	async function move(x, y) {
 		socket.emit('player:move', { x, y });
 	}
-	// optional initial state hydration
-	fetch(`${REST_BASE}/state`).then(r => r.json()).then(data => console.log('initial state', data));
+
+	// Optional initial state hydration
+	fetch(`${REST_BASE}/state`).then((r) => r.json()).then((data) => console.log('initial state', data));
 </script>
 ```
 
