@@ -1,5 +1,5 @@
 const express = require('express');
-const { getGameState, queueJoin, queueLeave, getActiveGames } = require('../sockets/gameHandlers');
+const { getGameState, queueJoin, queueLeave, getActiveGames, listLobbies } = require('../sockets/gameHandlers');
 const { getMatch, endMatch } = require('../db/repositories');
 
 // Factory so we can inject io
@@ -45,8 +45,8 @@ const createApiRouter = ({ io }) => {
       return res.status(404).json({ error: 'socket not connected' });
     }
 
-    await queueJoin(socketId, io);
-    return res.status(200).json({ ok: true });
+    const lobby = await queueJoin(socketId, io);
+    return res.status(200).json({ ok: true, lobby });
   });
 
   // Leave matchmaking queue by socket id
@@ -63,6 +63,11 @@ const createApiRouter = ({ io }) => {
   router.get('/players', async (_req, res) => {
     const state = await getGameState();
     res.json({ players: Object.values(state.players) });
+  });
+
+  // List active lobbies/rooms
+  router.get('/lobbies', (_req, res) => {
+    res.json({ lobbies: listLobbies() });
   });
 
   return router;

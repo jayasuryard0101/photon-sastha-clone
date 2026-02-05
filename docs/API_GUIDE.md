@@ -14,21 +14,26 @@ Backend: Node.js + Express + Socket.IO + MongoDB (see DB_CONNECTION_STRING in .e
 - GET /api/matches — { games: [ { gameId, players, room, status } ] }.
 - GET /api/matches/:gameId — single match document.
 - DELETE /api/matches/:gameId — marks a match as ended.
-- POST /api/queue/join — body { socketId }; enqueues a connected socket.
-- POST /api/queue/leave — body { socketId }; removes from queue.
+- POST /api/queue/join — body { socketId }; creates a lobby (room) with caller as host/master and returns { lobby }.
+- POST /api/queue/leave — body { socketId }; removes from queue (legacy; with lobbies you mostly use lobby events).
+- GET /api/lobbies — lists active lobbies { lobbies: [ { gameId, room, hostId, players, status } ] }.
 
 ## Socket.IO Events
 Client → Server
 - player:join — { username?, position?, score?, room? } → player persisted.
 - player:move — { x, y } → position persisted.
-- queue:join / queue:leave — matchmaking queue.
+- queue:join — create a lobby with yourself as host/master.
+- lobby:join — { gameId } join an existing lobby.
+- queue:leave — optional legacy queue removal.
 
 Server → Client
 - game:state — current persisted state snapshot.
-- player:joined — new player payload.
+- player:joined — player roster payload for room/lobby.
 - player:moved — { id, position }.
 - player:disconnected — <socketId>.
-- match:found — { gameId, players, room }, also persisted.
+- match:found — { gameId, players, room, masterClientId }, persisted; broadcast to room.
+- match:joined — { gameId, players, room, masterClientId }; sent directly to each socket.
+- master:changed — { gameId, masterClientId } when host leaves and is reassigned.
 
 ## Curl Samples
 ```
@@ -109,14 +114,13 @@ public class MultiplayerClient : MonoBehaviour
 			var payload = response.GetValue();
 			// update player positions in scene using payload["id"] and payload["position"]
 		});
-		socket.Connect();
-		StartCoroutine(FetchState());
-	}
-	public void Move(float x, float y)
-	{
-		socket.Emit("player:move", new { x, y });
-	}
-	private IEnumerator FetchState()
+		- Connecting to WebSocket: use Socket.IO client, e.g. `const socket = io('ws://photon-sastha-clone.onrender.com');`.
+		- Host flow (create lobby): after connecting, emit `player:join`, then call `POST /api/queue/join` with `{ socketId: socket.id }` or emit `queue:join`. You will receive `match:found`/`match:joined` with `{ gameId, room, masterClientId }`; you are the master.
+		- Joiner flow (discover + join): fetch `GET /api/lobbies`, pick a lobby `gameId`, emit `lobby:join { gameId }`. Listen for `match:found`/`match:joined` and `player:joined` to render roster and set `isMaster = socket.id === masterClientId`.
+		- Movement updates: emit `player:move` with `{ x, y }`; listen for `player:moved` to update other players and `game:state` for resyncs.
+		- State hydration: on page load, fetch `GET /api/state` to pre-populate players/matches; then rely on socket events for live updates.
+		- Disconnections: handle `player:disconnected` to remove players locally; on `master:changed`, update `isMaster`; on reconnect, re-run join + lobby join.
+		- Sample setup (browser):
 	{
 		using var req = UnityWebRequest.Get($"{RestBase}/state");
 		yield return req.SendWebRequest();

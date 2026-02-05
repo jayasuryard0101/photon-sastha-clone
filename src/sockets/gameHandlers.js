@@ -53,10 +53,17 @@ const gameEventHandlers = (socket, io) => {
         await handlePlayerMove(socket, movementData, io);
     });
 
-    socket.on('queue:join', () => {
-        console.log(`[socket:${socket.id}] queue:join`);
-        matchService.joinQueue(socket.id);
-        tryMatchPlayers(io).catch((err) => console.error('matchmaking failed', err));
+    socket.on('queue:join', async () => {
+        console.log(`[socket:${socket.id}] queue:join (create lobby as host)`);
+        await createLobbyForHost(socket, io);
+    });
+
+    socket.on('lobby:join', async ({ gameId } = {}) => {
+        console.log(`[socket:${socket.id}] lobby:join`, { gameId });
+        const payload = await joinLobbyById(socket, io, gameId);
+        if (!payload) {
+            socket.emit('lobby:error', { error: 'lobby not found' });
+        }
     });
 
     socket.on('queue:leave', () => {
@@ -111,6 +118,13 @@ const handlePlayerDisconnect = async (socket, io) => {
     } else {
         socket.broadcast.emit('player:disconnected', socket.id);
     }
+
+    // If the player was part of a lobby, update host assignment if needed
+    const lobbyUpdate = matchService.removePlayerFromLobbies(socket.id);
+    if (lobbyUpdate.removed && lobbyUpdate.lobby && lobbyUpdate.newHostId) {
+        io.to(lobbyUpdate.lobby.room).emit('master:changed', { gameId: lobbyUpdate.lobby.gameId, masterClientId: lobbyUpdate.newHostId });
+        console.log(`[matchmaking] master reassigned`, { gameId: lobbyUpdate.lobby.gameId, masterClientId: lobbyUpdate.newHostId });
+    }
 };
 
 const tryMatchPlayers = async (io) => {
@@ -163,6 +177,57 @@ const tryMatchPlayers = async (io) => {
     }
 };
 
+const ensurePlayerWithRoom = async (socket, room) => {
+    const existing = gameState.players[socket.id] || {
+        id: socket.id,
+        username: `player-${socket.id.slice(0, 5)}`,
+        position: { x: 0, y: 0 },
+        score: 0,
+    };
+    const withRoom = { ...existing, room };
+    gameState.players[socket.id] = withRoom;
+    await upsertPlayer(withRoom);
+    return withRoom;
+};
+
+const createLobbyForHost = async (socket, io) => {
+    if (!socket) return null;
+    const lobby = matchService.createLobby(socket.id);
+
+    socket.join(lobby.room);
+    const player = await ensurePlayerWithRoom(socket, lobby.room);
+
+    const payload = { gameId: lobby.gameId, players: lobby.players, room: lobby.room, masterClientId: lobby.hostId };
+
+    await createMatch({ gameId: lobby.gameId, players: lobby.players, room: lobby.room });
+    socket.emit('match:found', payload);
+    socket.emit('match:joined', payload);
+    io.to(lobby.room).emit('player:joined', [player]);
+    console.log(`[matchmaking] lobby created`, payload);
+    return payload;
+};
+
+const joinLobbyById = async (socket, io, gameId) => {
+    if (!socket || !gameId) return null;
+    const lobby = matchService.addPlayerToLobby(gameId, socket.id);
+    if (!lobby) return null;
+
+    socket.join(lobby.room);
+    await ensurePlayerWithRoom(socket, lobby.room);
+
+    // Persist updated players list for this lobby
+    await createMatch({ gameId: lobby.gameId, players: lobby.players, room: lobby.room });
+
+    const payload = { gameId: lobby.gameId, players: lobby.players, room: lobby.room, masterClientId: lobby.hostId };
+    socket.emit('match:joined', payload);
+    io.to(lobby.room).emit('match:found', payload);
+
+    const roster = lobby.players.map((id) => gameState.players[id]).filter(Boolean);
+    io.to(lobby.room).emit('player:joined', roster);
+    console.log(`[matchmaking] player joined lobby`, { gameId: lobby.gameId, players: roster.map((p) => p.id) });
+    return payload;
+};
+
 const getGameState = async () => {
     const [players, matches] = await Promise.all([listPlayers(), listMatches()]);
     return {
@@ -185,11 +250,12 @@ module.exports = {
     gameEventHandlers,
     getGameState,
     queueJoin: (socketId, io) => {
-        matchService.joinQueue(socketId);
-        return tryMatchPlayers(io);
+        const socket = io.sockets?.sockets?.get(socketId);
+        return createLobbyForHost(socket, io);
     },
     queueLeave: (socketId) => {
         matchService.leaveQueue(socketId);
     },
     getActiveGames: async () => listMatches(),
+    listLobbies: () => matchService.listLobbies(),
 };
