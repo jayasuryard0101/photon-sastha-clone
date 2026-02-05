@@ -15,21 +15,46 @@ let gameState = {
     isGameActive: false,
 };
 
+const hydratePlayers = async (socketIds) => {
+    const missing = socketIds.filter((id) => !gameState.players[id]);
+    if (missing.length) {
+        const dbPlayers = await listPlayers();
+        dbPlayers.forEach((p) => {
+            gameState.players[p.socketId] = {
+                id: p.socketId,
+                username: p.username,
+                position: p.position,
+                score: p.score,
+                room: p.room,
+            };
+        });
+        console.log(`[matchmaking] hydrated players from DB`, { missing, hydrated: dbPlayers.map((p) => p.socketId) });
+    }
+    return socketIds.map((id) => gameState.players[id]).filter(Boolean);
+};
+
 const gameEventHandlers = (socket, io) => {
     socket.on('player:join', async (payload = {}) => {
+        console.log(`[socket:${socket.id}] player:join received`, payload);
         const player = handlePlayerJoin(socket, payload);
         await upsertPlayer(player);
 
         const state = await getGameState();
         socket.emit('game:state', state);
+        // Let the joining player know immediately
+        socket.emit('player:joined', player);
+        console.log(`[socket:${socket.id}] player persisted and player:joined emitted to self`);
         socket.broadcast.emit('player:joined', player);
+        console.log(`[socket:${socket.id}] player:joined broadcast to others`);
     });
 
     socket.on('player:move', async (movementData = { x: 0, y: 0 }) => {
+        console.log(`[socket:${socket.id}] player:move`, movementData);
         await handlePlayerMove(socket, movementData, io);
     });
 
     socket.on('queue:join', () => {
+        console.log(`[socket:${socket.id}] queue:join`);
         matchService.joinQueue(socket.id);
         tryMatchPlayers(io).catch((err) => console.error('matchmaking failed', err));
     });
@@ -105,14 +130,37 @@ const tryMatchPlayers = async (io) => {
         if (player) player.room = room;
     });
 
-    const payload = {
-        gameId,
-        players: sockets.map((s) => s.id),
-        room,
-    };
+    const payload = { gameId, players: sockets.map((s) => s.id), room };
 
     await createMatch(payload);
     io.to(room).emit('match:found', payload);
+
+    try {
+        sockets.forEach((s) => s.emit('match:joined', payload));
+
+        const socketIds = sockets.map((s) => s.id);
+        let joinedPlayers = await hydratePlayers(socketIds);
+
+        if (!joinedPlayers.length) {
+            joinedPlayers = await Promise.all(
+                sockets.map(async (s) => {
+                    const existing = gameState.players[s.id] || {
+                        id: s.id,
+                        username: `player-${s.id.slice(0, 5)}`,
+                        position: { x: 0, y: 0 },
+                        score: 0,
+                    };
+                    const withRoom = { ...existing, room };
+                    gameState.players[s.id] = withRoom;
+                    await upsertPlayer(withRoom);
+                    return withRoom;
+                })
+            );
+        }
+        io.to(room).emit('player:joined', joinedPlayers);
+    } catch (err) {
+        console.error(`[matchmaking] emit failed`, { room, err });
+    }
 };
 
 const getGameState = async () => {

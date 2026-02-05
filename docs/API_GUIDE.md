@@ -146,7 +146,7 @@ public class MultiplayerClient : MonoBehaviour
 	3) Ask to find a partner by calling `POST /api/queue/join` with your `socket.id`. Wait for the server to reply with `match:found` which includes your room and gameId.
 	4) When `match:found` arrives, treat it as “you’re seated at table X”. Start rendering that match locally.
 	5) During play, send `player:move` whenever you move. The server echoes `player:moved` so everyone’s view stays in sync. Periodically the server can send `game:state` snapshots to resync.
-	6) If you close the browser or disconnect, the server emits `player:disconnected` so others can remove you; on reconnect, just repeat steps 1–3.
+	6) If you close the browser or disconnect, the server emits `player :disconnected` so others can remove you; on reconnect, just repeat steps 1–3.
 	    - Sequence for developers (tech view):
 	    - Transport: Socket.IO over WebSocket (`ws://...`), optional REST for queue/state fetch.
 	    - State source of truth: MongoDB; players and matches are persisted and reloaded on restart.
