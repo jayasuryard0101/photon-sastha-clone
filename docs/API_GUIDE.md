@@ -78,71 +78,79 @@ curl -X DELETE http://localhost:2000/api/matches/yourGameId
 </script>
 ```
 
-	## Unity (C#) Integration
-	- Library: use a Socket.IO client for Unity (e.g. `socket.io-client-unity` / `SocketIOUnity`). Target the WS endpoint `ws://photon-sastha-clone.onrender.com`.
-	- Basic setup:
-	```csharp
-	using System.Collections;
-	using UnityEngine;
-	using UnityEngine.Networking;
-	using SocketIOClient; // from socket.io-client-unity
-
-	public class MultiplayerClient : MonoBehaviour
+## Unity (C#) Integration
+- Library: use a Socket.IO client for Unity (e.g. `socket.io-client-unity` / `SocketIOUnity`). Target the WS endpoint `ws://photon-sastha-clone.onrender.com`.
+- Basic setup:
+```csharp
+using System.Collections;
+using UnityEngine;
+using UnityEngine.Networking;
+using SocketIOClient; // from socket.io-client-unity
+public class MultiplayerClient : MonoBehaviour
+{
+	private SocketIOUnity socket;
+	private const string RestBase = "https://photon-sastha-clone.onrender.com/api";
+	private void Start()
 	{
-		private SocketIOUnity socket;
-		private const string RestBase = "https://photon-sastha-clone.onrender.com/api";
-
-		private void Start()
+		var uri = new System.Uri("ws://photon-sastha-clone.onrender.com");
+		socket = new SocketIOUnity(uri, new SocketIOOptions { Transport = SocketIOClient.Transport.TransportProtocol.WebSocket });
+		socket.OnConnected += async (_, __) =>
 		{
-			var uri = new System.Uri("ws://photon-sastha-clone.onrender.com");
-			socket = new SocketIOUnity(uri, new SocketIOOptions { Transport = SocketIOClient.Transport.TransportProtocol.WebSocket });
-
-			socket.OnConnected += async (_, __) =>
-			{
-				socket.Emit("player:join", new { username = "UnityPlayer", position = new { x = 0, y = 0 }, score = 0 });
-				yield return StartCoroutine(PostJson($"{RestBase}/queue/join", new { socketId = socket.Id }));
-			};
-
-			socket.On("match:found", response =>
-			{
-				var room = response.GetValue().GetProperty("room").GetString();
-				Debug.Log($"Match found for room {room}");
-			});
-
-			socket.On("player:moved", response =>
-			{
-				var payload = response.GetValue();
-				// update player positions in scene using payload["id"] and payload["position"]
-			});
-
-			socket.Connect();
-			StartCoroutine(FetchState());
-		}
-
-		public void Move(float x, float y)
+			socket.Emit("player:join", new { username = "UnityPlayer", position = new { x = 0, y = 0 }, score = 0 });
+			yield return StartCoroutine(PostJson($"{RestBase}/queue/join", new { socketId = socket.Id }));
+		};
+		socket.On("match:found", response =>
 		{
-			socket.Emit("player:move", new { x, y });
-		}
-
-		private IEnumerator FetchState()
+			var room = response.GetValue().GetProperty("room").GetString();
+			Debug.Log($"Match found for room {room}");
+		});
+		socket.On("player:moved", response =>
 		{
-			using var req = UnityWebRequest.Get($"{RestBase}/state");
-			yield return req.SendWebRequest();
-			if (req.result == UnityWebRequest.Result.Success)
-				Debug.Log($"Initial state: {req.downloadHandler.text}");
-		}
-
-		private IEnumerator PostJson(string url, object body)
-		{
-			var json = JsonUtility.ToJson(body);
-			using var req = new UnityWebRequest(url, "POST");
-			byte[] bodyRaw = System.Text.Encoding.UTF8.GetBytes(json);
-			req.uploadHandler = new UploadHandlerRaw(bodyRaw);
-			req.downloadHandler = new DownloadHandlerBuffer();
-			req.SetRequestHeader("Content-Type", "application/json");
-			yield return req.SendWebRequest();
-		}
+			var payload = response.GetValue();
+			// update player positions in scene using payload["id"] and payload["position"]
+		});
+		socket.Connect();
+		StartCoroutine(FetchState());
 	}
-	```
-	- Reconnects: listen to `socket.OnReconnectAttempt` or similar and re-emit `player:join` plus re-queue.
-	- Threading: Socket.IO callbacks arrive on a background thread; marshal back to Unity main thread if mutating scene objects.
+	public void Move(float x, float y)
+	{
+		socket.Emit("player:move", new { x, y });
+	}
+	private IEnumerator FetchState()
+	{
+		using var req = UnityWebRequest.Get($"{RestBase}/state");
+		yield return req.SendWebRequest();
+		if (req.result == UnityWebRequest.Result.Success)
+			Debug.Log($"Initial state: {req.downloadHandler.text}");
+	}
+	private IEnumerator PostJson(string url, object body)
+	{
+		var json = JsonUtility.ToJson(body);
+		using var req = new UnityWebRequest(url, "POST");
+		byte[] bodyRaw = System.Text.Encoding.UTF8.GetBytes(json);
+		req.uploadHandler = new UploadHandlerRaw(bodyRaw);
+		req.downloadHandler = new DownloadHandlerBuffer();
+		req.SetRequestHeader("Content-Type", "application/json");
+		yield return req.SendWebRequest();
+	}
+}
+```
+- Reconnects: listen to `socket.OnReconnectAttempt` or similar and re-emit `player:join` plus re-queue.
+- Threading: Socket.IO callbacks arrive on a background thread; marshal back to Unity main thread if mutating scene objects.
+
+## End-to-End Flow (High Level)
+- What happens overall: client opens a websocket, says “I’m here” (`player:join`), asks to be matched (REST `POST /api/queue/join`), waits for `match:found`, then sends moves (`player:move`) while listening for others; server stores everything in MongoDB so restarts keep state.
+	- Sequence for humans:
+    1) Connect to the websocket URL. Think of it as plugging in a headset to talk in real time. 
+	2) Immediately introduce yourself with `player:join` so the server knows your name and position.
+	3) Ask to find a partner by calling `POST /api/queue/join` with your `socket.id`. Wait for the server to reply with `match:found` which includes your room and gameId.
+	4) When `match:found` arrives, treat it as “you’re seated at table X”. Start rendering that match locally.
+	5) During play, send `player:move` whenever you move. The server echoes `player:moved` so everyone’s view stays in sync. Periodically the server can send `game:state` snapshots to resync.
+	6) If you close the browser or disconnect, the server emits `player:disconnected` so others can remove you; on reconnect, just repeat steps 1–3.
+	    - Sequence for developers (tech view):
+	    - Transport: Socket.IO over WebSocket (`ws://...`), optional REST for queue/state fetch.
+	    - State source of truth: MongoDB; players and matches are persisted and reloaded on restart.
+	    - Entry calls: `player:join` persists a player document and binds it to the socketId; `POST /api/queue/join` enqueues that socket for matchmaking.
+	    - Matchmaking: when two queued sockets are available, server emits `match:found` with `{ gameId, players, room }` and persists a match document.
+	    - Gameplay loop: clients emit `player:move` → server validates and persists position → broadcasts `player:moved` to room. `game:state` can be emitted for full sync; REST `GET /api/state` is available for cold start.
+	    - Teardown: `DELETE /api/matches/:gameId` marks a match ended; disconnects trigger `player:disconnected` broadcast.
